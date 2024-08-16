@@ -24,11 +24,25 @@
 #include <algorithm>
 #include <string>
 #include <cstdio>
+#include <optional>
 #include <iostream>
+#include <boost/optional.hpp>
+#include "vendored/nlohmann/json.hpp"
 
+
+void usage() {
+    std::cerr<<R"(
+USAGE:
+  meshstatistics input.[mesh|msh|obj|off|ply|stl|wrl] [out.json]
+)";
+    ::exit(1);
+}
 int main(int argc, char * argv[])
 {
-  using namespace std;
+  using std::cerr;
+  using std::cout;
+  using std::end;
+  using std::string;
   using namespace Eigen;
   using namespace igl;
   MatrixXd V;
@@ -39,11 +53,12 @@ int main(int argc, char * argv[])
     case 2:
       in = argv[1];
       break;
+    case 3:
+      in = argv[1];
+      out = argv[2];
+      break;
     default:
-      cerr<<R"(
-USAGE:
-  meshstatistics input.[mesh|msh|obj|off|ply|stl|wrl]
-)";
+      usage();
     return EXIT_FAILURE;
   }
   const auto is_tet = [](const std::string & path)->bool
@@ -53,7 +68,7 @@ USAGE:
     std::transform(e.begin(), e.end(), e.begin(), ::tolower);
     return e == "mesh" || e == "msh";
   };
-  if( is_tet(in) && is_tet(out) )
+  if( is_tet(in))
   {
     const auto read_tet_mesh = [](
       const std::string & path,
@@ -88,7 +103,10 @@ USAGE:
       return EXIT_FAILURE;
     }
   }
+  nlohmann::ordered_json json;
+
   printf("%-9s %56s\n","filename",                                         in.c_str());
+  json["filename"] = in;
   // V,T,F have been set
   
   const int num_vertices = V.rows();
@@ -109,9 +127,14 @@ USAGE:
   printf("%-53s % 12d\n","number of faces",                                  num_faces);
   printf("%-53s % 12d\n","number of vertices",                               num_vertices);
   printf("%-53s % 12d\n","number of dimensions",                             dim);
+  json["n_edges"] = num_edges;
+  json["n_faces"] = num_faces;
+  json["n_vertices"] = num_vertices;
+  json["n_dims"] = dim;
 
   const double bbd = (V.colwise().maxCoeff()- V.colwise().minCoeff()).norm();
   const double small_area = 1e-7*2.*bbd*bbd;
+  json["thresholds"]["small_area"] = small_area;
   Eigen::VectorXd A;
   doublearea(V,F,A);
   const int num_small_triangles = (A.array()<=small_area).count();
@@ -139,6 +162,14 @@ USAGE:
   printf("%-53s % 12g\n","centroid_y",                                       centroid(1));
   printf("%-53s % 12g\n","centroid_z",                                       centroid(2));
 
+  json["bbox_diag"] = bbd;
+  json["min_angle"] = min_angle;
+  json["max_angle"] = max_angle;
+  json["min_area"] = min_area;
+  json["max_area"] = max_area;
+  json["volume"] = volume;
+  json["centroid"] = std::array<double,3>({centroid(0), centroid(1), centroid(2)});
+
   const double close_dist = 1e-7;
   const auto num_duplicate_up_to = [&](const double tol)->int
   {
@@ -154,6 +185,10 @@ USAGE:
   printf("%-53s % 12d\n","number of small triangles",                        num_small_triangles);
   printf("%-53s % 12d\n","number of small angles   ",                        num_small_angles);
   printf("%-53s % 12d\n","number of close vertices",                         num_close_vertices);
+
+  json["num_small_triangles"] = num_small_triangles;
+  json["num_small_angles"] = num_small_angles;
+  json["num_close_vertices"] = num_close_vertices;
 
   Eigen::SparseMatrix<int> DA;
   sparse(
@@ -240,6 +275,16 @@ USAGE:
   printf("%-53s % 12d\n","number of conflictingly oriented edges",           num_conflictingly_oriented_edges);
   printf("%-53s % 12d\n","number of nonmanifold vertices",                   num_nonmanifold_vertices);
 
+  json["num_connected_component"] = num_connected_components;
+  json["num_unreferenced_vertices"] = num_unreferenced_vertices;
+  json["num_handles"] = num_handles;
+  json["euler_characteristic"] = euler_characteristic;
+  json["num_boundary_loops"] = num_boundary_loops;
+  json["num_boundary_edges"] = num_boundary_edges;
+  json["num_nonmanifold_edges"] = num_nonmanifold_edges;
+  json["num_conflictingly_oriented_edges"] = num_conflictingly_oriented_edges;
+  json["num_nonmanifold_vertices"] = num_nonmanifold_vertices;
+
   Eigen::MatrixXi uF;
   unique_simplices(F,uF);
   const int num_combinatorially_duplicate_faces = num_faces - uF.rows();
@@ -254,6 +299,11 @@ USAGE:
   printf("%-53s % 12d\n","number of combinatorially duplicate faces",        num_combinatorially_duplicate_faces);
   printf("%-53s % 12d\n","number of geometrically degenerate faces",         num_geometrically_degenerate_faces);
   printf("%-53s % 12d\n","number of combinatorially degenerate faces",       num_combinatorially_degenerate_faces);
+
+  json["num_duplicate_vertices"] = num_duplicate_vertices;
+  json["num_combinatorially_duplicate_faces"] = num_combinatorially_duplicate_faces;
+  json["num_geometrically_degenerate_faces"] = num_geometrically_degenerate_faces;
+  json["num_combinatorially_degenerate_faces"] = num_combinatorially_degenerate_faces;
 
   const bool fast = false;
   int num_selfintersecting_pairs = 0;
@@ -288,9 +338,15 @@ USAGE:
 
   }
 
-  if(!fast)                                                   
-  {                                                  
-  printf("%-53s % 12d\n","number of intra-component self-intersecting pairs",num_intracomponent_selfintersecting_pairs);
-  printf("%-53s % 12d\n","number of self-intersecting pairs",                num_selfintersecting_pairs);
+  if(!fast)
+  {
+      printf("%-53s % 12d\n","number of intra-component self-intersecting pairs",num_intracomponent_selfintersecting_pairs);
+      printf("%-53s % 12d\n","number of self-intersecting pairs",                num_selfintersecting_pairs);
+      json["num_intracomponent_selfintersecting_pairs"] = num_intracomponent_selfintersecting_pairs;
+      json["num_selfintersecting_pairs"] = num_selfintersecting_pairs;
+  }
+  if (!out.empty()) {
+      auto js = std::ofstream(out);
+      js << std::setw(2) << json;
   }
 }
